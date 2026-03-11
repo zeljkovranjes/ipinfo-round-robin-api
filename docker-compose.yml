@@ -1,0 +1,11 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      IPINFO_KEYS: "key1,key2,key3"
+      CACHE_TTL_SECONDS: 300
+      CACHE_MAX_ENTRIES: 10000
+      LOG_FORMAT: json
+    restart: unless-stopped
