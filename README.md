@@ -7,9 +7,10 @@ A lightweight HTTP proxy written in Rust that mirrors all [IPInfo](https://ipinf
 - Transparent proxy for all IPInfo endpoints
 - Round-robin rotation across N API keys
 - Automatic cooldown when a key hits `429` or `401`, with recovery after a configurable window
-- In-memory LRU cache with per-entry TTL
+- In-memory LRU cache (TinyLFU) with per-entry TTL and max body size limit
+- Singleflight coalescing — concurrent cache-miss requests for the same key are collapsed into one upstream call
 - `Cache-Control: no-cache` bypass support
-- `POST /batch` responses never cached
+- `POST /batch` and `GET /me` never cached (not cacheable)
 - `/health`, `/stats`, and `DELETE /cache` internal endpoints
 - Structured logging via `tracing` (text or JSON)
 - Single static binary, minimal allocations
