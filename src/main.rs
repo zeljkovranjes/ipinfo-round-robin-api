@@ -1,6 +1,7 @@
 mod cache;
 mod config;
 mod rotator;
+mod stats;
 
 fn main() {
     match config::Config::from_env() {
