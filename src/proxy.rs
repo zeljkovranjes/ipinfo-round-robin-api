@@ -40,7 +40,7 @@ impl AppState {
             config.cooldown_seconds,
         ));
         let cache = Arc::new(Cache::new(
-            config.cache_ttl_seconds,
+            std::time::Duration::from_secs(config.cache_ttl_seconds),
             config.cache_max_entries,
         ));
 
@@ -125,7 +125,7 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
 
     // --- Cache read (skip for POST /batch and no-cache requests) ---
     if !is_post_batch && !no_cache {
-        if let Some(entry) = s.cache.get(&cache_key) {
+        if let Some(entry) = s.cache.get(&cache_key).await {
             s.stats.inc_cached();
             let elapsed = start.elapsed().as_micros();
             info!(
@@ -268,7 +268,7 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
                 axum::body::Bytes::copy_from_slice(&resp_bytes),
                 content_type.clone(),
                 status_u16,
-            );
+            ).await;
         }
     }
 

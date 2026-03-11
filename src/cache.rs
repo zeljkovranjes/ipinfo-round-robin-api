@@ -1,114 +1,77 @@
 use axum::body::Bytes;
-use dashmap::DashMap;
+use moka::future::Cache as MokaCache;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct CacheEntry {
     pub body: Bytes,
     pub content_type: String,
     pub status: u16,
-    inserted_at: Instant,
-    last_used: Arc<AtomicU64>, // epoch nanos, for LRU tracking
-}
-
-impl CacheEntry {
-    fn is_expired(&self, ttl: Duration) -> bool {
-        self.inserted_at.elapsed() >= ttl
-    }
-
-    fn touch(&self) {
-        let now = epoch_nanos();
-        self.last_used.store(now, Ordering::Relaxed);
-    }
-
-    fn last_used_nanos(&self) -> u64 {
-        self.last_used.load(Ordering::Relaxed)
-    }
 }
 
 pub struct Cache {
-    map: DashMap<String, CacheEntry>,
-    ttl: Duration,
-    max_entries: usize,
+    inner: MokaCache<String, CacheEntry>,
     hits: AtomicU64,
     misses: AtomicU64,
-    evictions: AtomicU64,
+    evictions: Arc<AtomicU64>,
 }
 
 impl Cache {
-    pub fn new(ttl_seconds: u64, max_entries: usize) -> Self {
+    pub fn new(ttl: Duration, max_entries: usize) -> Self {
+        let evictions = Arc::new(AtomicU64::new(0));
+        let ev = Arc::clone(&evictions);
+        let inner = MokaCache::builder()
+            .max_capacity(max_entries as u64)
+            .time_to_live(ttl)
+            .eviction_listener(move |_k, _v, _cause| {
+                ev.fetch_add(1, Ordering::Relaxed);
+            })
+            .build();
         Cache {
-            map: DashMap::new(),
-            ttl: Duration::from_secs(ttl_seconds),
-            max_entries,
+            inner,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
-            evictions: AtomicU64::new(0),
+            evictions,
         }
     }
 
-    /// Look up a cached entry. Returns `None` on miss or expiry.
-    pub fn get(&self, key: &str) -> Option<CacheEntry> {
-        if let Some(entry) = self.map.get(key) {
-            if entry.is_expired(self.ttl) {
-                drop(entry);
-                self.map.remove(key);
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                return None;
+    pub async fn get(&self, key: &str) -> Option<CacheEntry> {
+        match self.inner.get(key).await {
+            Some(e) => {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                Some(e)
             }
-            entry.touch();
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(entry.clone());
+            None => {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                None
+            }
         }
-        self.misses.fetch_add(1, Ordering::Relaxed);
-        None
     }
 
-    /// Insert an entry. Evicts the LRU entry if at capacity.
-    pub fn insert(&self, key: String, body: Bytes, content_type: String, status: u16) {
-        // Evict if full (check before inserting)
-        if self.map.len() >= self.max_entries && !self.map.contains_key(&key) {
-            self.evict_lru();
-        }
-
-        let entry = CacheEntry {
-            body,
-            content_type,
-            status,
-            inserted_at: Instant::now(),
-            last_used: Arc::new(AtomicU64::new(epoch_nanos())),
-        };
-        self.map.insert(key, entry);
+    pub async fn insert(&self, key: String, body: Bytes, content_type: String, status: u16) {
+        self.inner
+            .insert(key, CacheEntry { body, content_type, status })
+            .await;
     }
 
-    /// Flush all entries.
     pub fn clear(&self) {
-        self.map.clear();
+        self.inner.invalidate_all();
     }
 
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
-            size: self.map.len(),
+            size: self.inner.entry_count() as usize,
             evictions: self.evictions.load(Ordering::Relaxed),
         }
     }
 
-    fn evict_lru(&self) {
-        // Find the key with the smallest last_used timestamp.
-        let oldest_key = self
-            .map
-            .iter()
-            .min_by_key(|e| e.value().last_used_nanos())
-            .map(|e| e.key().clone());
-
-        if let Some(key) = oldest_key {
-            self.map.remove(&key);
-            self.evictions.fetch_add(1, Ordering::Relaxed);
-        }
+    #[cfg(test)]
+    async fn run_pending_tasks(&self) {
+        self.inner.run_pending_tasks().await;
     }
 }
 
@@ -120,13 +83,6 @@ pub struct CacheStats {
     pub evictions: u64,
 }
 
-/// Nanoseconds since an arbitrary epoch (used for LRU ordering only).
-fn epoch_nanos() -> u64 {
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    let base = START.get_or_init(Instant::now);
-    base.elapsed().as_nanos() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,57 +91,54 @@ mod tests {
         (Bytes::from(body.to_string()), "application/json".into(), 200)
     }
 
-    #[test]
-    fn basic_hit_miss() {
-        let c = Cache::new(300, 100);
-        assert!(c.get("k1").is_none());
+    #[tokio::test]
+    async fn basic_hit_miss() {
+        let c = Cache::new(Duration::from_secs(300), 100);
+        assert!(c.get("k1").await.is_none());
         let (b, ct, s) = make_entry("{}");
-        c.insert("k1".into(), b, ct, s);
-        assert!(c.get("k1").is_some());
+        c.insert("k1".into(), b, ct, s).await;
+        assert!(c.get("k1").await.is_some());
         let stats = c.stats();
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
     }
 
-    #[test]
-    fn ttl_expiry() {
-        let c = Cache::new(0, 100); // 0s TTL — expires immediately
+    #[tokio::test]
+    async fn ttl_expiry() {
+        let c = Cache::new(Duration::from_millis(50), 100);
         let (b, ct, s) = make_entry("{}");
-        c.insert("k1".into(), b, ct, s);
-        std::thread::sleep(Duration::from_millis(1));
-        assert!(c.get("k1").is_none());
+        c.insert("k1".into(), b, ct, s).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        c.run_pending_tasks().await;
+        assert!(c.get("k1").await.is_none());
     }
 
-    #[test]
-    fn lru_eviction_at_capacity() {
-        let c = Cache::new(300, 2);
+    #[tokio::test]
+    async fn eviction_at_capacity() {
+        let c = Cache::new(Duration::from_secs(300), 2);
         let (b1, ct1, s1) = make_entry("1");
         let (b2, ct2, s2) = make_entry("2");
         let (b3, ct3, s3) = make_entry("3");
 
-        c.insert("k1".into(), b1, ct1, s1);
-        std::thread::sleep(Duration::from_millis(1));
-        c.insert("k2".into(), b2, ct2, s2);
+        c.insert("k1".into(), b1, ct1, s1).await;
+        c.insert("k2".into(), b2, ct2, s2).await;
+        c.insert("k3".into(), b3, ct3, s3).await;
+        c.run_pending_tasks().await;
 
-        // Touch k1 so k2 becomes LRU
-        c.get("k1");
-
-        // Inserting k3 should evict k2 (least recently used)
-        c.insert("k3".into(), b3, ct3, s3);
-
-        assert!(c.get("k1").is_some(), "k1 should still be present");
-        assert!(c.get("k2").is_none(), "k2 should have been evicted");
-        assert!(c.get("k3").is_some(), "k3 should be present");
-        assert_eq!(c.stats().evictions, 1);
+        // moka uses TinyLFU, not pure LRU — we don't assert which entry was evicted,
+        // just that the cache respects its capacity and the eviction counter fired.
+        assert!(c.stats().size <= 2, "cache exceeded max_capacity");
+        assert!(c.stats().evictions >= 1, "at least one eviction should have occurred");
     }
 
-    #[test]
-    fn clear_flushes_all() {
-        let c = Cache::new(300, 100);
+    #[tokio::test]
+    async fn clear_flushes_all() {
+        let c = Cache::new(Duration::from_secs(300), 100);
         let (b, ct, s) = make_entry("{}");
-        c.insert("k1".into(), b.clone(), ct.clone(), s);
-        c.insert("k2".into(), b, ct, s);
+        c.insert("k1".into(), b.clone(), ct.clone(), s).await;
+        c.insert("k2".into(), b, ct, s).await;
         c.clear();
+        c.run_pending_tasks().await;
         assert_eq!(c.stats().size, 0);
     }
 }
