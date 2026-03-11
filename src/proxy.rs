@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     cache::Cache,
@@ -253,14 +253,23 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
         latency_us = elapsed,
     );
 
-    // --- Cache store (only 2xx, not POST /batch, not no-cache) ---
+    // --- Cache store (only 2xx, not POST /batch, not no-cache, not oversized) ---
     if !is_post_batch && !no_cache && upstream_status.is_success() {
-        s.cache.insert(
-            cache_key,
-            axum::body::Bytes::copy_from_slice(&resp_bytes),
-            content_type.clone(),
-            status_u16,
-        );
+        if resp_bytes.len() > s.config.cache_max_body_bytes {
+            debug!(
+                path = %uri.path(),
+                body_bytes = resp_bytes.len(),
+                limit_bytes = s.config.cache_max_body_bytes,
+                "skipping cache: response body exceeds size limit"
+            );
+        } else {
+            s.cache.insert(
+                cache_key,
+                axum::body::Bytes::copy_from_slice(&resp_bytes),
+                content_type.clone(),
+                status_u16,
+            );
+        }
     }
 
     build_response(status_u16, &content_type, axum::body::Bytes::copy_from_slice(&resp_bytes))

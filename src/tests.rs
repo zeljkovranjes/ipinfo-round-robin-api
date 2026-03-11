@@ -22,6 +22,7 @@ mod integration {
             request_timeout_ms: 5000,
             cache_ttl_seconds: 300,
             cache_max_entries: 1000,
+            cache_max_body_bytes: 32 * 1024,
             log_level: "error".into(),
             log_format: "text".into(),
             ipinfo_base_url: mock_url,

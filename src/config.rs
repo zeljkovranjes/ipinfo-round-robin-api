@@ -9,6 +9,8 @@ pub struct Config {
     pub request_timeout_ms: u64,
     pub cache_ttl_seconds: u64,
     pub cache_max_entries: usize,
+    /// Responses larger than this (bytes) are not cached. Default 32 KiB.
+    pub cache_max_body_bytes: usize,
     pub log_level: String,
     pub log_format: String,
     pub ipinfo_base_url: String,
@@ -40,6 +42,7 @@ impl Config {
             request_timeout_ms: parse_env("REQUEST_TIMEOUT_MS", 5000)?,
             cache_ttl_seconds: parse_env("CACHE_TTL_SECONDS", 300)?,
             cache_max_entries: parse_env("CACHE_MAX_ENTRIES", 10000)?,
+            cache_max_body_bytes: parse_env("CACHE_MAX_BODY_BYTES", 32 * 1024)?,
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             log_format: env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
             ipinfo_base_url: env::var("IPINFO_BASE_URL")
