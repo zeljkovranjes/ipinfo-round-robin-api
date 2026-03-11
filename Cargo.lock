@@ -640,6 +640,7 @@ dependencies = [
  "axum",
  "dashmap",
  "dotenvy",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",

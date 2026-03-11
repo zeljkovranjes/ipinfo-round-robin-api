@@ -1,4 +1,5 @@
 mod config;
+mod rotator;
 
 fn main() {
     match config::Config::from_env() {
