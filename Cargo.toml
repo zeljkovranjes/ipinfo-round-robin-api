@@ -14,7 +14,6 @@ serde_json         = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 dotenvy            = "0.15"
-tokio-util         = "0.7"
 parking_lot        = "0.12"
 
 [dev-dependencies]
