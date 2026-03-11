@@ -145,15 +145,16 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
         None => {
             s.stats.inc_keys_exhausted();
             warn!(path = %uri.path(), "all keys exhausted");
-            return (
+            let retry_after = s.config.cooldown_seconds.to_string();
+            let mut resp = (
                 StatusCode::SERVICE_UNAVAILABLE,
-                [(
-                    "retry-after",
-                    s.config.cooldown_seconds.to_string().as_str(),
-                )],
                 "All API keys are rate limited. Try again later.",
             )
                 .into_response();
+            if let Ok(v) = HeaderValue::from_str(&retry_after) {
+                resp.headers_mut().insert("retry-after", v);
+            }
+            return resp;
         }
     };
 
@@ -165,6 +166,13 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
     );
 
     // --- Forward request body (needed for POST /batch) ---
+    let req_content_type = req
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+
     let body_bytes = if is_post_batch {
         match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
             Ok(b) => b,
@@ -185,7 +193,7 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
 
     let upstream_req = if is_post_batch {
         upstream_req
-            .header("Content-Type", "application/json")
+            .header("Content-Type", req_content_type)
             .body(body_bytes.clone())
     } else {
         upstream_req
@@ -214,6 +222,14 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
         );
     }
 
+    // Capture content-type before consuming the response
+    let content_type = upstream_resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+
     // --- Read upstream body ---
     let resp_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
@@ -225,11 +241,6 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
     };
 
     let status_u16 = upstream_status.as_u16();
-    let content_type = upstream_status
-        .canonical_reason()
-        .map(|_| "application/json")
-        .unwrap_or("application/json")
-        .to_string();
 
     s.stats.inc_proxied();
     let elapsed = start.elapsed().as_micros();

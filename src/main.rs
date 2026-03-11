@@ -3,6 +3,8 @@ mod config;
 mod proxy;
 mod rotator;
 mod stats;
+#[cfg(test)]
+mod tests;
 
 use tracing_subscriber::{fmt, EnvFilter};
 
