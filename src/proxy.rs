@@ -64,8 +64,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(proxy_handler))
         .route("/me", get(proxy_handler))
         .route("/batch", post(proxy_handler))
-        .route("/{ip}", get(proxy_handler))
-        .route("/{ip}/{field}", get(proxy_handler))
+        .route("/:ip", get(proxy_handler))
+        .route("/:ip/:field", get(proxy_handler))
         .with_state(state)
 }
 
