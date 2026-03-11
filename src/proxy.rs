@@ -119,7 +119,7 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
     );
 
     let is_post_batch = method == axum::http::Method::POST;
-    let is_me_or_root = matches!(uri.path(), "/" | "/me");
+    let is_me = uri.path() == "/me";
     let no_cache = req
         .headers()
         .get("cache-control")
@@ -127,8 +127,8 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
         .map(|v| v.contains("no-cache"))
         .unwrap_or(false);
 
-    // --- Cache read (skip for POST /batch, no-cache, and /me|/ which are key-specific) ---
-    if !is_post_batch && !no_cache && !is_me_or_root {
+    // --- Cache read (skip for POST /batch, no-cache, and /me which is key-specific) ---
+    if !is_post_batch && !no_cache && !is_me {
         if let Some(entry) = s.cache.get(&cache_key).await {
             s.stats.inc_cached();
             info!(
@@ -168,8 +168,8 @@ async fn proxy_handler(State(s): State<AppState>, req: Request) -> Response {
         uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
     );
 
-    // POST /batch, no-cache, and /me|/ bypass singleflight — always go direct
-    if is_post_batch || no_cache || is_me_or_root {
+    // POST /batch, no-cache, and /me bypass singleflight — always go direct
+    if is_post_batch || no_cache || is_me {
         return direct_proxy(&s, &method, &upstream_url, body_bytes, req_content_type, is_post_batch, start, &uri).await;
     }
 
