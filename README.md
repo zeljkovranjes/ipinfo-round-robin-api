@@ -52,7 +52,7 @@ All configuration is via environment variables (or a `.env` file):
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Caller's own IP info |
-| `GET` | `/me` | Caller's own IP info (alias) |
+| `GET` | `/me` | Returns API key and usage (misleading path ik) |
 | `GET` | `/:ip` | Full info for an IP |
 | `GET` | `/:ip/:field` | Single field (e.g. `/8.8.8.8/country`) |
 | `POST` | `/batch` | Batch IP lookups (not cached) |
