@@ -101,6 +101,7 @@ Runs on [Cloudflare Workers](https://workers.cloudflare.com). No server required
 - Round-robin state and stats are per-isolate and reset on cold start
 - `DELETE /cache` returns `501` — Workers Cache has no bulk-invalidation; entries expire via `Cache-Control max-age`
 - No singleflight (Workers handles request coalescing at the infrastructure level)
+- Optional [Analytics Engine](#analytics-engine) integration for per-request metrics
 
 ### Deploy
 
@@ -117,6 +118,49 @@ wrangler secret put IPINFO_KEYS
 # Deploy
 wrangler deploy
 ```
+
+### Analytics Engine
+
+Optional. Requires a [Workers paid plan](https://developers.cloudflare.com/workers/platform/pricing/).
+
+Uncomment the binding in `wrangler.toml`:
+
+```toml
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset  = "ipinfo_requests"
+```
+
+Each proxy request writes a data point you can query via [Workers Analytics Engine SQL](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/):
+
+| Field | Value |
+|---|---|
+| `index1` | Path type: `root`, `me`, `ip`, `ip_field`, `batch` |
+| `double1` | HTTP status code |
+| `double2` | `1` if served from cache, `0` if not |
+| `double3` | `1` if an upstream call was made, `0` if not |
+| `double4` | `1` if a key was put into cooldown (429/401), `0` if not |
+| `double5` | Response size in bytes |
+
+Example queries:
+
+```sql
+-- Cache hit rate by path type (last 24 h)
+SELECT index1 AS path_type,
+  SUM(_sample_interval * double2) / SUM(_sample_interval) AS cache_hit_rate,
+  COUNT() AS requests
+FROM ipinfo_requests
+WHERE timestamp > NOW() - INTERVAL '1' DAY
+GROUP BY index1
+
+-- Key cooldown events over time (5-minute buckets)
+SELECT toStartOfInterval(timestamp, INTERVAL '5' MINUTE) AS t,
+  SUM(_sample_interval * double4) AS cooldowns
+FROM ipinfo_requests
+GROUP BY t ORDER BY t
+```
+
+If the binding is absent (free plan / not configured), writes are silently skipped — no errors, no impact on requests.
 
 ### Configuration
 
