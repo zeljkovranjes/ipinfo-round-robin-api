@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use worker::{Cache, Fetch, Headers, Method, Request, RequestInit, Response, Result};
+use worker::{AnalyticsEngineDataPointBuilder, Cache, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result};
 
 use crate::{
     config::{mask_key, Config},
@@ -30,7 +30,7 @@ impl AppState {
 }
 
 /// Main entry point — routes to the right handler.
-pub async fn handle(req: Request, state: AppState) -> Result<Response> {
+pub async fn handle(req: Request, env: Env, state: AppState) -> Result<Response> {
     let path = req.path();
     let trimmed = path.trim_end_matches('/');
 
@@ -38,7 +38,49 @@ pub async fn handle(req: Request, state: AppState) -> Result<Response> {
         (Method::Get, "/health") => health_handler(&state).await,
         (Method::Get, "/stats") => stats_handler(&state).await,
         (Method::Delete, "/cache") => cache_delete_handler().await,
-        _ => proxy_handler(req, &state).await,
+        _ => proxy_handler(req, &state, &env).await,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Analytics helpers
+// ---------------------------------------------------------------------------
+
+fn request_path_type(path: &str, is_post_batch: bool, is_me: bool) -> &'static str {
+    if is_post_batch {
+        return "batch";
+    }
+    if is_me {
+        return "me";
+    }
+    if path == "/" || path.is_empty() {
+        return "root";
+    }
+    let segments = path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).count();
+    if segments >= 2 { "ip_field" } else { "ip" }
+}
+
+fn write_analytics(
+    env: &Env,
+    kind: &str,
+    status: u16,
+    cache_hit: bool,
+    upstream: bool,
+    cooldown: bool,
+    bytes: usize,
+) {
+    if let Ok(ds) = env.analytics_engine("ANALYTICS") {
+        let point = AnalyticsEngineDataPointBuilder::new()
+            .indexes([kind])
+            .doubles(vec![
+                f64::from(status),
+                if cache_hit { 1.0 } else { 0.0 },
+                if upstream { 1.0 } else { 0.0 },
+                if cooldown { 1.0 } else { 0.0 },
+                bytes as f64,
+            ])
+            .build();
+        let _ = ds.write_data_point(&point);
     }
 }
 
@@ -71,7 +113,7 @@ async fn cache_delete_handler() -> Result<Response> {
 // Proxy handler
 // ---------------------------------------------------------------------------
 
-async fn proxy_handler(mut req: Request, state: &AppState) -> Result<Response> {
+async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<Response> {
     let url = req.url()?;
     let path = url.path().to_string();
     let is_post_batch = req.method() == Method::Post;
@@ -81,6 +123,8 @@ async fn proxy_handler(mut req: Request, state: &AppState) -> Result<Response> {
         .get("cache-control")?
         .map(|v| v.contains("no-cache"))
         .unwrap_or(false);
+
+    let kind = request_path_type(&path, is_post_batch, is_me);
 
     // Build the upstream URL, preserving query params
     let path_with_query = match url.query() {
@@ -92,6 +136,8 @@ async fn proxy_handler(mut req: Request, state: &AppState) -> Result<Response> {
     // --- Workers Cache API read (skip for POST /batch, no-cache, and /me) ---
     if !is_post_batch && !no_cache && !is_me {
         if let Some(cached) = Cache::default().get(upstream_url.as_str(), false).await? {
+            let status = cached.status_code();
+            write_analytics(env, kind, status, true, false, false, 0);
             return Ok(cached);
         }
     }
@@ -103,6 +149,7 @@ async fn proxy_handler(mut req: Request, state: &AppState) -> Result<Response> {
     let key = match state.rotator.next_key() {
         Some(k) => k,
         None => {
+            write_analytics(env, kind, 503, false, false, false, 0);
             let mut resp =
                 Response::error("All API keys are rate limited. Try again later.", 503)?;
             resp.headers_mut()
@@ -130,8 +177,9 @@ async fn proxy_handler(mut req: Request, state: &AppState) -> Result<Response> {
     let mut upstream_resp = Fetch::Request(upstream_req).send().await?;
 
     let upstream_status = upstream_resp.status_code();
+    let cooldown = upstream_status == 429 || upstream_status == 401;
 
-    if upstream_status == 429 || upstream_status == 401 {
+    if cooldown {
         state.rotator.mark_cooldown(&key);
         worker::console_log!(
             "key {} marked for cooldown (status {})",
@@ -172,6 +220,8 @@ async fn proxy_handler(mut req: Request, state: &AppState) -> Result<Response> {
             let _ = Cache::default().put(upstream_url.as_str(), cache_resp).await;
         }
     }
+
+    write_analytics(env, kind, upstream_status, false, true, cooldown, resp_bytes.len());
 
     // --- Build final response ---
     let mut resp_headers = Headers::new();
