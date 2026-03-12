@@ -26,6 +26,7 @@ mod integration {
             log_level: "error".into(),
             log_format: "text".into(),
             ipinfo_base_url: mock_url,
+            redact_keys: false,
         };
         AppState::new(config)
     }
