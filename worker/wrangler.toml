@@ -1,4 +1,4 @@
-name = "ipinfo-round-robin-worker"
+name = "worker-ipinfo-round-robin"
 main = "build/worker/shim.mjs"
 compatibility_date = "2025-01-01"
 
