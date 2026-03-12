@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use web_time::Instant;
 use worker::{AnalyticsEngineDataPointBuilder, Cache, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result};
 
 use crate::{
@@ -69,6 +70,7 @@ fn write_analytics(
     cooldown: bool,
     bytes: usize,
     key_idx: Option<usize>,
+    latency_ms: f64,
 ) {
     if let Ok(ds) = env.analytics_engine("ANALYTICS") {
         let point = AnalyticsEngineDataPointBuilder::new()
@@ -80,6 +82,7 @@ fn write_analytics(
                 if cooldown { 1.0 } else { 0.0 },
                 bytes as f64,
                 key_idx.map(|i| i as f64).unwrap_or(-1.0),
+                latency_ms,
             ])
             .build();
         let _ = ds.write_data_point(&point);
@@ -116,6 +119,7 @@ async fn cache_delete_handler() -> Result<Response> {
 // ---------------------------------------------------------------------------
 
 async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<Response> {
+    let start = Instant::now();
     let url = req.url()?;
     let path = url.path().to_string();
     let is_post_batch = req.method() == Method::Post;
@@ -139,7 +143,7 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
     if !is_post_batch && !no_cache && !is_me {
         if let Some(cached) = Cache::default().get(upstream_url.as_str(), false).await? {
             let status = cached.status_code();
-            write_analytics(env, kind, status, true, false, false, 0, None);
+            write_analytics(env, kind, status, true, false, false, 0, None, start.elapsed().as_secs_f64() * 1000.0);
             return Ok(cached);
         }
     }
@@ -151,7 +155,7 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
     let (key_idx, key) = match state.rotator.next_key() {
         Some(k) => k,
         None => {
-            write_analytics(env, kind, 503, false, false, false, 0, None);
+            write_analytics(env, kind, 503, false, false, false, 0, None, start.elapsed().as_secs_f64() * 1000.0);
             let mut resp =
                 Response::error("All API keys are rate limited. Try again later.", 503)?;
             resp.headers_mut()
@@ -223,7 +227,7 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
         }
     }
 
-    write_analytics(env, kind, upstream_status, false, true, cooldown, resp_bytes.len(), Some(key_idx));
+    write_analytics(env, kind, upstream_status, false, true, cooldown, resp_bytes.len(), Some(key_idx), start.elapsed().as_secs_f64() * 1000.0);
 
     // --- Build final response ---
     let mut resp_headers = Headers::new();
