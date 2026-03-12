@@ -141,6 +141,7 @@ Each proxy request writes a data point you can query via [Workers Analytics Engi
 | `double3` | `1` if an upstream call was made, `0` if not |
 | `double4` | `1` if a key was put into cooldown (429/401), `0` if not |
 | `double5` | Response size in bytes |
+| `double6` | Key slot index (0-based); `-1` for cache hits and exhausted-key 503s |
 
 Example queries:
 
@@ -158,6 +159,13 @@ SELECT toStartOfInterval(timestamp, INTERVAL '5' MINUTE) AS t,
   SUM(_sample_interval * double4) AS cooldowns
 FROM `ipinfo-round-robin_requests`
 GROUP BY t ORDER BY t
+
+-- Requests per key slot (rotation distribution)
+SELECT double6 AS key_slot, COUNT() AS requests
+FROM `ipinfo-round-robin_requests`
+WHERE timestamp > NOW() - INTERVAL '1' HOUR
+  AND double6 >= 0
+GROUP BY key_slot ORDER BY key_slot
 ```
 
 If the binding is absent (free plan / not configured), writes are silently skipped — no errors, no impact on requests.
