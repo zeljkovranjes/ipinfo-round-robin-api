@@ -310,6 +310,12 @@ async fn direct_proxy(
         latency_us = start.elapsed().as_micros(),
     );
 
+    let resp_bytes = if s.config.redact_keys && uri.path() == "/me" {
+        redact_token_field(resp_bytes)
+    } else {
+        resp_bytes
+    };
+
     build_response(status_u16, &content_type, resp_bytes)
 }
 
@@ -395,6 +401,26 @@ async fn fetch_and_cache(
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
+
+/// Redact the "token" field in a /me JSON response, keeping only the first 3 chars.
+fn redact_token_field(body: axum::body::Bytes) -> axum::body::Bytes {
+    let Ok(mut map) = serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&body)
+    else {
+        return body;
+    };
+    if let Some(serde_json::Value::String(token)) = map.get("token") {
+        let redacted = if token.len() > 3 {
+            format!("{}...", &token[..3])
+        } else {
+            "...".to_string()
+        };
+        map.insert("token".to_string(), serde_json::Value::String(redacted));
+    }
+    match serde_json::to_vec(&map) {
+        Ok(bytes) => axum::body::Bytes::from(bytes),
+        Err(_) => body,
+    }
+}
 
 fn build_response(status: u16, content_type: &str, body: axum::body::Bytes) -> Response {
     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
