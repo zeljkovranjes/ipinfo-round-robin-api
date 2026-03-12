@@ -31,10 +31,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build (debug)
-        run: cargo build --locked
+        run: cargo build --locked -p ipinfo-round-robin-api
 
       - name: Build (release)
-        run: cargo build --locked --release
+        run: cargo build --locked --release -p ipinfo-round-robin-api
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked -p ipinfo-round-robin-api
