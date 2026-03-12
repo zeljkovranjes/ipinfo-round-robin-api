@@ -128,7 +128,7 @@ Uncomment the binding in `wrangler.toml`:
 ```toml
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
-dataset  = "ipinfo_requests"
+dataset  = "ipinfo-round-robin_requests"
 ```
 
 Each proxy request writes a data point you can query via [Workers Analytics Engine SQL](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/):
@@ -149,14 +149,14 @@ Example queries:
 SELECT index1 AS path_type,
   SUM(_sample_interval * double2) / SUM(_sample_interval) AS cache_hit_rate,
   COUNT() AS requests
-FROM ipinfo_requests
+FROM `ipinfo-round-robin_requests`
 WHERE timestamp > NOW() - INTERVAL '1' DAY
 GROUP BY index1
 
 -- Key cooldown events over time (5-minute buckets)
 SELECT toStartOfInterval(timestamp, INTERVAL '5' MINUTE) AS t,
   SUM(_sample_interval * double4) AS cooldowns
-FROM ipinfo_requests
+FROM `ipinfo-round-robin_requests`
 GROUP BY t ORDER BY t
 ```
 
