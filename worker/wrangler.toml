@@ -20,9 +20,9 @@ REDACT_KEYS          = "false"
 # Uncomment to track per-request metrics (cache hit rate, status codes, key cooldowns, etc.)
 # Query your data at https://dash.cloudflare.com/ → Workers → Analytics Engine
 #
-[[analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset  = "ipinfo-round-robin_requests"
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset  = "ipinfo_requests"
 
 [observability]
 enabled = false
