@@ -14,6 +14,8 @@ pub struct Config {
     pub log_level: String,
     pub log_format: String,
     pub ipinfo_base_url: String,
+    /// If true, redact API keys in /me responses (show only first 3 chars).
+    pub redact_keys: bool,
 }
 
 impl Config {
@@ -47,6 +49,9 @@ impl Config {
             log_format: env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
             ipinfo_base_url: env::var("IPINFO_BASE_URL")
                 .unwrap_or_else(|_| "https://ipinfo.io".to_string()),
+            redact_keys: env::var("REDACT_KEYS")
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
         })
     }
 }
