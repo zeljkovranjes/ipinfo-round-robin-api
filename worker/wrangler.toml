@@ -4,3 +4,14 @@ compatibility_date = "2025-01-01"
 
 [build]
 command = "cargo install -q worker-build && worker-build --release"
+
+# Set your API keys as a secret (never put real keys in vars):
+#   wrangler secret put IPINFO_KEYS
+#   Value format: "key1,key2,key3"
+
+[vars]
+CACHE_TTL_SECONDS    = "300"
+COOLDOWN_SECONDS     = "60"
+CACHE_MAX_BODY_BYTES = "32768"
+IPINFO_BASE_URL      = "https://ipinfo.io"
+REDACT_KEYS          = "false"
