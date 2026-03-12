@@ -1,25 +1,47 @@
 # ipinfo-round-robin-api
 
-A lightweight HTTP proxy written in Rust that mirrors all [IPInfo](https://ipinfo.io) endpoints, rotates through multiple API keys using a round-robin strategy, and caches responses in-memory to minimise upstream calls and bypass rate limits.
+A lightweight HTTP proxy written in Rust that mirrors all [IPInfo](https://ipinfo.io) endpoints, rotates through multiple API keys using a round-robin strategy, and caches responses to minimise upstream calls and bypass rate limits.
+
+Two deployment targets are available:
+
+| | `server/` | `worker/` |
+|---|---|---|
+| Runtime | Tokio / Axum | Cloudflare Workers |
+| Cache | In-memory LRU (moka) | Workers Cache API (edge) |
+| State | Process-lifetime | Per-isolate (resets on cold start) |
+| Deploy | Docker / bare metal | `wrangler deploy` |
+
+---
 
 ## Features
 
-- Transparent proxy for all IPInfo endpoints
+- Transparent proxy for all IPInfo endpoints (`/`, `/me`, `/:ip`, `/:ip/:field`, `POST /batch`)
 - Round-robin rotation across N API keys
 - Automatic cooldown when a key hits `429` or `401`, with recovery after a configurable window
-- In-memory LRU cache (TinyLFU) with per-entry TTL and max body size limit
-- Singleflight coalescing — concurrent cache-miss requests for the same key are collapsed into one upstream call
 - `Cache-Control: no-cache` bypass support
-- `POST /batch` and `GET /me` never cached (not cacheable)
+- `POST /batch` and `GET /me` are never cached
+- Optional key redaction in `/me` responses (`REDACT_KEYS=true`)
 - `/health`, `/stats`, and `DELETE /cache` internal endpoints
-- Structured logging via `tracing` (text or JSON)
-- Single static binary, minimal allocations
 
-## Quick Start
+---
+
+## server/
+
+Self-hosted binary. Runs anywhere Docker runs.
+
+**Additional features over the worker:**
+- In-memory LRU cache (TinyLFU) with per-entry TTL and max body size limit
+- Singleflight coalescing — concurrent cache-miss requests for the same key collapse into one upstream call
+- Persistent round-robin state and stats for the lifetime of the process
+- Structured logging via `tracing` (text or JSON)
+
+### Quick Start
 
 ```bash
+cd server
+
 # 1. Copy and fill in your keys
-cp .env.example .env
+cp ../.env.example ../.env
 
 # 2. Run
 cargo run
@@ -29,7 +51,7 @@ curl http://localhost:8080/8.8.8.8
 curl http://localhost:8080/8.8.8.8/country
 ```
 
-## Configuration
+### Configuration
 
 All configuration is via environment variables (or a `.env` file):
 
@@ -42,18 +64,90 @@ All configuration is via environment variables (or a `.env` file):
 | `REQUEST_TIMEOUT_MS` | `5000` | Timeout for upstream requests |
 | `CACHE_TTL_SECONDS` | `300` | Cache entry time-to-live |
 | `CACHE_MAX_ENTRIES` | `10000` | Max cache entries before LRU eviction |
+| `CACHE_MAX_BODY_BYTES` | `32768` | Responses larger than this are not cached |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LOG_FORMAT` | `text` | `text` or `json` |
 | `IPINFO_BASE_URL` | `https://ipinfo.io` | Override upstream (useful for testing) |
+| `REDACT_KEYS` | `false` | Mask token field in `/me` responses |
+
+### Docker
+
+```bash
+cd server
+docker compose up
+```
+
+Or build manually:
+
+```bash
+docker build -t ipinfo-round-robin-api server/
+docker run -e IPINFO_KEYS=your_key -p 8080:8080 ipinfo-round-robin-api
+```
+
+### Tests
+
+```bash
+cargo test -p ipinfo-round-robin-api
+```
+
+---
+
+## worker/
+
+Runs on [Cloudflare Workers](https://workers.cloudflare.com). No server required.
+
+**Differences from the server:**
+- Cache is backed by the [Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/) — persists across isolate restarts, shared across edge locations in the same region
+- Round-robin state and stats are per-isolate and reset on cold start
+- `DELETE /cache` returns `501` — Workers Cache has no bulk-invalidation; entries expire via `Cache-Control max-age`
+- No singleflight (Workers handles request coalescing at the infrastructure level)
+
+### Deploy
+
+```bash
+cd worker
+
+# First time: authenticate
+wrangler login
+
+# Set your API keys as a secret (never hardcode them)
+wrangler secret put IPINFO_KEYS
+# Enter: key1,key2,key3
+
+# Deploy
+wrangler deploy
+```
+
+### Configuration
+
+Secrets (sensitive — set via `wrangler secret put`):
+
+| Secret | Description |
+|---|---|
+| `IPINFO_KEYS` | Comma-separated API keys |
+
+Vars (non-sensitive — set in `wrangler.toml` under `[vars]`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `COOLDOWN_SECONDS` | `60` | Seconds before retrying a rate-limited key |
+| `CACHE_TTL_SECONDS` | `300` | Cache entry time-to-live |
+| `CACHE_MAX_BODY_BYTES` | `32768` | Responses larger than this are not cached |
+| `IPINFO_BASE_URL` | `https://ipinfo.io` | Override upstream |
+| `REDACT_KEYS` | `false` | Mask token field in `/me` responses |
+
+---
 
 ## Endpoints
+
+Both versions expose the same endpoints:
 
 ### Proxy (mirrors IPInfo)
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Caller's own IP info |
-| `GET` | `/me` | Returns API key and usage (misleading path ik) |
+| `GET` | `/me` | Returns API key and usage (not cached) |
 | `GET` | `/:ip` | Full info for an IP |
 | `GET` | `/:ip/:field` | Single field (e.g. `/8.8.8.8/country`) |
 | `POST` | `/batch` | Batch IP lookups (not cached) |
@@ -63,27 +157,10 @@ All configuration is via environment variables (or a `.env` file):
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Key status (total / active / cooling) |
-| `GET` | `/stats` | Request counts, cache stats, key stats |
-| `DELETE` | `/cache` | Flush entire cache |
+| `GET` | `/stats` | Request counts and key stats |
+| `DELETE` | `/cache` | Flush cache (server only; 501 on worker) |
 
-## Docker
-
-```bash
-docker compose up
-```
-
-Or build manually:
-
-```bash
-docker build -t ipinfo-round-robin-api .
-docker run -e IPINFO_KEYS=your_key -p 8080:8080 ipinfo-round-robin-api
-```
-
-## Running Tests
-
-```bash
-cargo test
-```
+---
 
 ## License
 
