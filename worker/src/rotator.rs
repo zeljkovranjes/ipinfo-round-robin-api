@@ -7,9 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use web_time::{Duration, Instant};
 
+use crate::config::mask_key;
+
 struct KeyState {
     key: String,
     cooling_until: Option<Instant>,
+    requests: usize,
 }
 
 impl KeyState {
@@ -31,7 +34,7 @@ impl Rotator {
     pub fn new(keys: Vec<String>, cooldown_seconds: u64) -> Self {
         let keys = keys
             .into_iter()
-            .map(|k| Arc::new(Mutex::new(KeyState { key: k, cooling_until: None })))
+            .map(|k| Arc::new(Mutex::new(KeyState { key: k, cooling_until: None, requests: 0 })))
             .collect();
 
         Rotator {
@@ -41,16 +44,18 @@ impl Rotator {
         }
     }
 
-    /// Returns the next available key, or `None` if all are cooling down.
-    pub fn next_key(&self) -> Option<String> {
+    /// Returns the slot index and key for the next available key,
+    /// or `None` if all are cooling down.
+    pub fn next_key(&self) -> Option<(usize, String)> {
         let n = self.keys.len();
         let start = self.counter.fetch_add(1, Ordering::Relaxed) % n;
 
         for i in 0..n {
             let idx = (start + i) % n;
-            let state = self.keys[idx].lock().unwrap();
+            let mut state = self.keys[idx].lock().unwrap();
             if state.is_available() {
-                return Some(state.key.clone());
+                state.requests += 1;
+                return Some((idx, state.key.clone()));
             }
         }
         None
@@ -70,17 +75,27 @@ impl Rotator {
     /// Key stats for /health and /stats endpoints.
     pub fn stats(&self) -> RotatorStats {
         let (mut total, mut active, mut cooling) = (0, 0, 0);
+        let mut keys = Vec::with_capacity(self.keys.len());
         for slot in &self.keys {
             let state = slot.lock().unwrap();
             total += 1;
-            if state.is_available() {
-                active += 1;
-            } else {
-                cooling += 1;
-            }
+            let is_active = state.is_available();
+            if is_active { active += 1; } else { cooling += 1; }
+            keys.push(KeyStat {
+                id: mask_key(&state.key),
+                requests: state.requests,
+                status: if is_active { "active" } else { "cooling" },
+            });
         }
-        RotatorStats { total, active, cooling }
+        RotatorStats { total, active, cooling, keys }
     }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct KeyStat {
+    pub id: String,
+    pub requests: usize,
+    pub status: &'static str,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -88,4 +103,5 @@ pub struct RotatorStats {
     pub total: usize,
     pub active: usize,
     pub cooling: usize,
+    pub keys: Vec<KeyStat>,
 }

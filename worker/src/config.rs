@@ -59,10 +59,10 @@ fn get_var_parsed<T: std::str::FromStr>(env: &Env, key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// Mask an API key for safe logging: show last 3 chars only.
+/// Mask an API key for safe logging/display: show first 3 chars only.
 pub fn mask_key(key: &str) -> String {
     if key.len() <= 3 {
-        return "***".to_string();
+        return "...".to_string();
     }
-    format!("***{}", &key[key.len() - 3..])
+    format!("{}...", &key[..3])
 }

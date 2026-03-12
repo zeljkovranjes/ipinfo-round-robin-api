@@ -68,6 +68,7 @@ fn write_analytics(
     upstream: bool,
     cooldown: bool,
     bytes: usize,
+    key_idx: Option<usize>,
 ) {
     if let Ok(ds) = env.analytics_engine("ANALYTICS") {
         let point = AnalyticsEngineDataPointBuilder::new()
@@ -78,6 +79,7 @@ fn write_analytics(
                 if upstream { 1.0 } else { 0.0 },
                 if cooldown { 1.0 } else { 0.0 },
                 bytes as f64,
+                key_idx.map(|i| i as f64).unwrap_or(-1.0),
             ])
             .build();
         let _ = ds.write_data_point(&point);
@@ -137,7 +139,7 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
     if !is_post_batch && !no_cache && !is_me {
         if let Some(cached) = Cache::default().get(upstream_url.as_str(), false).await? {
             let status = cached.status_code();
-            write_analytics(env, kind, status, true, false, false, 0);
+            write_analytics(env, kind, status, true, false, false, 0, None);
             return Ok(cached);
         }
     }
@@ -146,10 +148,10 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
     let body_bytes: Vec<u8> = if is_post_batch { req.bytes().await? } else { Vec::new() };
 
     // --- Get API key ---
-    let key = match state.rotator.next_key() {
+    let (key_idx, key) = match state.rotator.next_key() {
         Some(k) => k,
         None => {
-            write_analytics(env, kind, 503, false, false, false, 0);
+            write_analytics(env, kind, 503, false, false, false, 0, None);
             let mut resp =
                 Response::error("All API keys are rate limited. Try again later.", 503)?;
             resp.headers_mut()
@@ -221,7 +223,7 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
         }
     }
 
-    write_analytics(env, kind, upstream_status, false, true, cooldown, resp_bytes.len());
+    write_analytics(env, kind, upstream_status, false, true, cooldown, resp_bytes.len(), Some(key_idx));
 
     // --- Build final response ---
     let mut resp_headers = Headers::new();
