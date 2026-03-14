@@ -132,10 +132,20 @@ async fn proxy_handler(mut req: Request, state: &AppState, env: &Env) -> Result<
 
     let kind = request_path_type(&path, is_post_batch, is_me);
 
-    // Build the upstream URL, preserving query params
+    // Build the upstream URL, preserving query params.
+    // For root "/" requests, ipinfo would see the Worker's egress IP instead of the
+    // client's IP. Rewrite to "/{CF-Connecting-IP}" so the caller gets their own info.
+    let effective_path = if (path == "/" || path.is_empty()) && !is_post_batch {
+        req.headers()
+            .get("cf-connecting-ip")?
+            .map(|ip| format!("/{ip}"))
+            .unwrap_or_else(|| path.clone())
+    } else {
+        path.clone()
+    };
     let path_with_query = match url.query() {
-        Some(q) => format!("{}?{}", url.path(), q),
-        None => url.path().to_string(),
+        Some(q) => format!("{}?{}", effective_path, q),
+        None => effective_path,
     };
     let upstream_url = format!("{}{}", state.config.ipinfo_base_url, path_with_query);
 
